@@ -19,6 +19,17 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+# Helper function for executable directory paths
+def executable_dir_path(relative_path):
+    """Get path relative to executable directory (for external files like maps)"""
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller executable
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        # Running as script
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(exe_dir, relative_path)
+
 # Initialize Pygame
 pygame.init()
 pygame.mixer.init()
@@ -309,7 +320,7 @@ class Menu:
     def load_available_levels(self):
         levels = []
         try:
-            maps_dir = resource_path("maps")
+            maps_dir = executable_dir_path("maps")
             if not os.path.exists(maps_dir):
                 raise FileNotFoundError("Maps directory not found")
             map_files = [f for f in os.listdir(maps_dir) if f.endswith(".json")]
@@ -471,7 +482,7 @@ class Game:
         return False
         
     def load_map(self, map_name):
-        map_path = os.path.join(resource_path("maps"), f"{map_name}.json")
+        map_path = os.path.join(executable_dir_path("maps"), f"{map_name}.json")
         try:
             with open(map_path, 'r') as f:
                 map_data = json.load(f)

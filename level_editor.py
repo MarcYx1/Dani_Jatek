@@ -15,6 +15,17 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+# Helper function for executable directory paths
+def executable_dir_path(relative_path):
+    """Get path relative to executable directory (for external files like maps)"""
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller executable
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        # Running as script
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(exe_dir, relative_path)
+
 # Initialize Pygame
 pygame.init()
 
@@ -79,8 +90,8 @@ class LevelEditor:
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
         
-        # Ensure maps directory exists (use current directory for writing)
-        self.maps_dir = "maps"  # Always use current directory for level editor
+        # Ensure maps directory exists (use executable directory)
+        self.maps_dir = executable_dir_path("maps")
         if not os.path.exists(self.maps_dir):
             os.makedirs(self.maps_dir)
     
@@ -881,26 +892,13 @@ class LevelEditor:
             root = tk.Tk()
             root.withdraw()
             
-            # List available levels from both bundled and local maps
+            # List available levels from maps directory
             available_levels = []
-            # Check bundled maps first
-            try:
-                bundled_maps = resource_path("maps")
-                if os.path.exists(bundled_maps):
-                    for file in os.listdir(bundled_maps):
-                        if file.endswith(".json"):
-                            level_name = file.replace(".json", "")
-                            if level_name not in available_levels:
-                                available_levels.append(level_name)
-            except:
-                pass
-            # Check local maps
             if os.path.exists(self.maps_dir):
                 for file in os.listdir(self.maps_dir):
                     if file.endswith(".json"):
                         level_name = file.replace(".json", "")
-                        if level_name not in available_levels:
-                            available_levels.append(level_name)
+                        available_levels.append(level_name)
             
             level_list = ", ".join(available_levels) if available_levels else "No levels found"
             
@@ -979,16 +977,7 @@ class LevelEditor:
     
     def load_level(self):
         """Load level from JSON file"""
-        # Try local maps first, then bundled maps
         filename = os.path.join(self.maps_dir, f"{self.level_name}.json")
-        if not os.path.exists(filename):
-            # Try bundled maps
-            try:
-                bundled_filename = os.path.join(resource_path("maps"), f"{self.level_name}.json")
-                if os.path.exists(bundled_filename):
-                    filename = bundled_filename
-            except:
-                pass
         try:
             with open(filename, 'r') as f:
                 level_data = json.load(f)
