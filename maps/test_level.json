@@ -1,0 +1,138 @@
+{
+  "name": "Test Level",
+  "start_position": {
+    "x": 460,
+    "y": 460
+  },
+  "yellow_blocks": [
+    {
+      "x": 100,
+      "y": 680,
+      "width": 40,
+      "height": 20,
+      "id": 3
+    },
+    {
+      "x": 0,
+      "y": 440,
+      "width": 60,
+      "height": 20,
+      "id": 22
+    },
+    {
+      "x": 300,
+      "y": 480,
+      "width": 60,
+      "height": 80,
+      "id": 27
+    },
+    {
+      "x": 80,
+      "y": 400,
+      "width": 280,
+      "height": 60,
+      "id": 29
+    },
+    {
+      "x": 640,
+      "y": 500,
+      "width": 60,
+      "height": 60,
+      "id": 32
+    }
+  ],
+  "pits": [
+    {
+      "x": 80,
+      "width": 80
+    }
+  ],
+  "spikes": [],
+  "trigger_boxes": [
+    {
+      "x": 260,
+      "y": 480,
+      "width": 40,
+      "height": 80,
+      "id": 18,
+      "actions": {
+        "16": {
+          "action": "appear",
+          "duration": 2.0
+        },
+        "27": {
+          "action": "move",
+          "duration": 2.0,
+          "target_x": 160,
+          "target_y": 480
+        },
+        "3": {
+          "action": "disappear",
+          "duration": 2.0
+        }
+      },
+      "enabled": true
+    },
+    {
+      "x": 0,
+      "y": 380,
+      "width": 60,
+      "height": 20,
+      "id": 24,
+      "actions": {
+        "22": {
+          "action": "appear",
+          "duration": 2.0
+        }
+      },
+      "enabled": true
+    },
+    {
+      "x": 220,
+      "y": 460,
+      "width": 140,
+      "height": 20,
+      "id": 26,
+      "actions": {
+        "25": {
+          "action": "appear",
+          "duration": 2.0
+        },
+        "29": {
+          "action": "appear",
+          "duration": 2.0
+        }
+      },
+      "enabled": true
+    },
+    {
+      "x": 580,
+      "y": 500,
+      "width": 60,
+      "height": 60,
+      "id": 30,
+      "actions": {
+        "31": [
+          {
+            "action": "appear",
+            "duration": 2.0,
+            "delay": 0.0
+          }
+        ],
+        "32": [
+          {
+            "action": "move",
+            "duration": 2.0,
+            "delay": 0.0,
+            "target_x": 780,
+            "target_y": 420
+          }
+        ]
+      },
+      "enabled": true
+    }
+  ],
+  "flag": {
+    "x": 1240
+  }
+}

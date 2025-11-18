@@ -36,6 +36,10 @@ FPS = 60
 GRID_SIZE = 20
 CAMERA_SPEED = 10
 
+# Game camera constants (from the actual game)
+GAME_SCREEN_WIDTH = 800
+GAME_SCREEN_HEIGHT = 600
+
 # Colors
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -80,6 +84,7 @@ class LevelEditor:
         self.action_mode = False  # When true, clicking objects sets trigger actions
         self.action_step = 0  # 0: select trigger, 1: select object, 2: select action
         self.move_duration = 2.0
+        self.temp_move_position = None  # Temporary storage for move position before applying
         self.ghost_objects = []  # Store ghost positions for move actions
         self.connection_lines = []  # Store trigger-object connections
         self.ghost_cursor_object = None  # Object being positioned for move action
@@ -89,6 +94,11 @@ class LevelEditor:
         self.level_name = "new_level"
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
+        
+        # Undo/Redo functionality
+        self.undo_history = []
+        self.redo_history = []
+        self.max_undo_history = 50  # Limit to prevent memory issues
         
         # Ensure maps directory exists (use executable directory)
         self.maps_dir = executable_dir_path("maps")
@@ -172,6 +182,10 @@ class LevelEditor:
                         self.selected_trigger = None
                         self.selected_object = None
                     print("Action mode:", "ON" if self.action_mode else "OFF")
+                elif event.key == pygame.K_z and (keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]):
+                    self.undo_last_action()
+                elif event.key == pygame.K_y and (keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]):
+                    self.redo_last_action()
                 elif event.key == pygame.K_RETURN:
                     self.prompt_save_level()
                 elif event.key == pygame.K_l:
@@ -180,6 +194,8 @@ class LevelEditor:
                     self.new_level()
                 elif event.key == pygame.K_t:
                     self.test_level()
+                elif event.key == pygame.K_e:
+                    self.toggle_trigger_at_mouse()
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left mouse button
@@ -190,8 +206,11 @@ class LevelEditor:
                         if self.action_mode:
                             if self.action_step == 2:  # Setting move position
                                 snapped_x, snapped_y = self.snap_to_grid(world_x, world_y)
-                                self.add_trigger_action("move", target_x=snapped_x, target_y=snapped_y, duration=self.move_duration)
-                                self.reset_action_mode()
+                                # Store temporary move position and reopen dialog
+                                self.temp_move_position = (snapped_x, snapped_y)
+                                self.ghost_cursor_object = None
+                                self.action_step = 1  # Reset to object selection step
+                                self.show_object_action_dialog()
                             else:
                                 self.handle_action_mode_click(world_x, world_y)
                         else:
@@ -213,6 +232,10 @@ class LevelEditor:
     
     def place_object(self, world_x, world_y):
         snapped_x, snapped_y = self.snap_to_grid(world_x, world_y)
+        
+        # Save state before making changes
+        if self.current_tool in ["flag", "start", "spike", "erase"]:
+            self.save_state_to_undo()
         
         if self.current_tool == "flag":
             self.flag_x = snapped_x
@@ -245,6 +268,9 @@ class LevelEditor:
     def create_rectangle(self, start_pos, end_pos):
         if not start_pos:
             return
+        
+        # Save state before making changes
+        self.save_state_to_undo()
         
         x1, y1 = start_pos
         x2, y2 = end_pos
@@ -315,7 +341,8 @@ class LevelEditor:
                 "width": width,
                 "height": height,
                 "id": self.next_object_id,
-                "actions": {}
+                "actions": {},
+                "enabled": True
             })
             self.next_object_id += 1
     
@@ -397,62 +424,435 @@ class LevelEditor:
                     self.show_action_dialog()
                     return
             
-            print("Click on an object (yellow block or spike) to link it to the trigger.")
+            # Check other triggers (for enable/disable actions)
+            for trigger in self.trigger_boxes:
+                if (trigger["x"] <= world_x < trigger["x"] + trigger["width"] and
+                    trigger["y"] <= world_y < trigger["y"] + trigger["height"]):
+                    # Don't allow self-targeting
+                    if trigger != self.selected_trigger:
+                        trigger_copy = trigger.copy()
+                        trigger_copy["type"] = "trigger"  # Mark as trigger for action selection
+                        self.selected_object = trigger_copy
+                        self.show_action_dialog()
+                        return
+            
+            print("Click on an object (yellow block, spike, or another trigger) to link it to the trigger.")
     
     def show_action_dialog(self):
-        """Show dialog to select action type"""
-        root = tk.Tk()
-        root.withdraw()  # Hide main window
+        """Show dialog to select action type with checkboxes"""
+        # Check if target object is a trigger
+        target_is_trigger = self.selected_object.get("type") == "trigger"
         
-        # Ask for action type
-        action = messagebox.askyesnocancel("Select Action", 
-            f"What action should Object {self.selected_object['id']} perform when Trigger {self.selected_trigger['id']} is activated?\n\n"
-            "YES = Appear/Disappear\n"
-            "NO = Move\n"
-            "CANCEL = Cancel")
-        
-        if action is None:  # Cancel
-            self.reset_action_mode()
-            return
-        
-        if action:  # Appear/Disappear
-            appear = messagebox.askyesno("Action Type", "Should the object APPEAR or DISAPPEAR?\n\nYES = Appear\nNO = Disappear")
-            action_type = "appear" if appear else "disappear"
-            duration = simpledialog.askfloat("Duration", "How many seconds should the action take?", minvalue=0.1, maxvalue=10.0, initialvalue=2.0)
-            if duration:
-                self.add_trigger_action(action_type, duration=duration)
-        else:  # Move
-            duration = simpledialog.askfloat("Duration", "How many seconds should the movement take?", minvalue=0.1, maxvalue=10.0, initialvalue=2.0)
-            if duration:
-                messagebox.showinfo("Move Position", "Click on the map where the object should move to.")
-                self.action_step = 2
-                self.move_duration = duration
-                # Set up ghost cursor object
-                self.ghost_cursor_object = self.selected_object.copy()
-                return
-        
-        self.reset_action_mode()
-        root.destroy()
+        if target_is_trigger:
+            self.show_trigger_action_dialog()
+        else:
+            self.show_object_action_dialog()
     
-    def add_trigger_action(self, action_type, target_x=None, target_y=None, duration=2.0):
-        """Add an action to the selected trigger"""
+    def get_existing_action(self):
+        """Get existing action between selected trigger and object"""
+        if not self.selected_trigger or not self.selected_object:
+            return None
+        
+        actions = self.selected_trigger.get("actions", {})
+        return actions.get(str(self.selected_object["id"]), None)
+    
+    def get_existing_action(self):
+        """Get existing action between selected trigger and object"""
+        if not self.selected_trigger or not self.selected_object:
+            return None
+        
+        actions = self.selected_trigger.get("actions", {})
+        return actions.get(str(self.selected_object["id"]), None)
+    
+    def get_existing_trigger_action(self):
+        """Get existing action between selected trigger and target trigger"""
+        if not self.selected_trigger or not self.selected_object:
+            return None
+        
+        trigger_actions = self.selected_trigger.get("trigger_actions", {})
+        return trigger_actions.get(str(self.selected_object["id"]), None)
+    
+    def get_all_existing_actions(self):
+        """Get all existing actions between selected trigger and object"""
+        if not self.selected_trigger or not self.selected_object:
+            return []
+        
+        actions = self.selected_trigger.get("actions", {})
+        obj_actions = actions.get(str(self.selected_object["id"]), [])
+        
+        # Handle both single action (old format) and multiple actions (new format)
+        if isinstance(obj_actions, dict):
+            return [obj_actions]  # Convert single action to list
+        elif isinstance(obj_actions, list):
+            return obj_actions
+        else:
+            return []
+    
+    def get_all_existing_actions(self):
+        """Get all existing actions between selected trigger and object"""
+        if not self.selected_trigger or not self.selected_object:
+            return []
+        
+        actions = self.selected_trigger.get("actions", {})
+        obj_actions = actions.get(str(self.selected_object["id"]), [])
+        
+        # Handle both single action (old format) and multiple actions (new format)
+        if isinstance(obj_actions, dict):
+            return [obj_actions]  # Convert single action to list
+        elif isinstance(obj_actions, list):
+            return obj_actions
+        else:
+            return []
+    
+    def show_trigger_action_dialog(self):
+        """Show dialog for trigger-to-trigger actions"""
+        root = tk.Tk()
+        root.title("Trigger Action Setup")
+        root.geometry("400x200")
+        
+        # Center the window
+        root.eval('tk::PlaceWindow . center')
+        
+        # Variables for checkboxes
+        enable_var = tk.BooleanVar()
+        disable_var = tk.BooleanVar()
+        
+        # Check existing action and pre-select checkbox
+        existing_action = self.get_existing_trigger_action()
+        if existing_action:
+            if existing_action["action"] == "enable":
+                enable_var.set(True)
+            elif existing_action["action"] == "disable":
+                disable_var.set(True)
+        
+        # Title label
+        title_label = tk.Label(root, text=f"Trigger {self.selected_trigger['id']} → Trigger {self.selected_object['id']}", 
+                              font=('Arial', 12, 'bold'))
+        title_label.pack(pady=10)
+        
+        # Checkbox frame
+        checkbox_frame = tk.Frame(root)
+        checkbox_frame.pack(pady=10)
+        
+        def on_enable_change():
+            if enable_var.get():
+                disable_var.set(False)
+        
+        def on_disable_change():
+            if disable_var.get():
+                enable_var.set(False)
+        
+        # Enable checkbox
+        enable_cb = tk.Checkbutton(checkbox_frame, text="Enable Target Trigger", 
+                                  variable=enable_var, command=on_enable_change)
+        enable_cb.pack(anchor='w', pady=5)
+        
+        # Disable checkbox
+        disable_cb = tk.Checkbutton(checkbox_frame, text="Disable Target Trigger", 
+                                   variable=disable_var, command=on_disable_change)
+        disable_cb.pack(anchor='w', pady=5)
+        
+        # Buttons frame
+        button_frame = tk.Frame(root)
+        button_frame.pack(pady=20)
+        
+        def apply_action():
+            if enable_var.get():
+                self.add_trigger_action("enable", duration=0.0)
+                root.destroy()
+                self.reset_action_mode()
+            elif disable_var.get():
+                self.add_trigger_action("disable", duration=0.0)
+                root.destroy()
+                self.reset_action_mode()
+            else:
+                messagebox.showwarning("No Action Selected", "Please select an action (Enable or Disable)")
+        
+        def cancel_action():
+            root.destroy()
+            self.reset_action_mode()
+        
+        apply_btn = tk.Button(button_frame, text="Apply", command=apply_action, bg='lightgreen')
+        apply_btn.pack(side='left', padx=10)
+        
+        cancel_btn = tk.Button(button_frame, text="Cancel", command=cancel_action, bg='lightcoral')
+        cancel_btn.pack(side='left', padx=10)
+        
+        root.mainloop()
+    
+    def show_object_action_dialog(self):
+        """Show dialog for trigger-to-object actions"""
+        root = tk.Tk()
+        root.title("Object Action Setup")
+        root.geometry("450x300")
+        
+        # Center the window
+        root.eval('tk::PlaceWindow . center')
+        
+        # Variables for checkboxes and entries
+        appear_var = tk.BooleanVar()
+        disappear_var = tk.BooleanVar()
+        move_var = tk.BooleanVar()
+        
+        # Delay variables for each action
+        appear_delay_var = tk.StringVar(value="0.0")
+        disappear_delay_var = tk.StringVar(value="0.0")
+        move_delay_var = tk.StringVar(value="0.0")
+        
+        # Delay variables for each action
+        appear_delay_var = tk.StringVar(value="0.0")
+        disappear_delay_var = tk.StringVar(value="0.0")
+        move_delay_var = tk.StringVar(value="0.0")
+        
+        # Check existing actions and pre-select checkboxes
+        existing_actions = self.get_all_existing_actions()
+        for action_data in existing_actions:
+            if action_data["action"] == "appear":
+                appear_var.set(True)
+                if "delay" in action_data:
+                    appear_delay_var.set(str(action_data["delay"]))
+            elif action_data["action"] == "disappear":
+                disappear_var.set(True)
+                if "delay" in action_data:
+                    disappear_delay_var.set(str(action_data["delay"]))
+            elif action_data["action"] == "move":
+                move_var.set(True)
+                if "duration" in action_data:
+                    self.move_duration = action_data["duration"]
+                if "delay" in action_data:
+                    move_delay_var.set(str(action_data["delay"]))
+        
+        # Also check for temporary move position (dialog reopening case)
+        if self.temp_move_position:
+            move_var.set(True)
+        
+        # Title label
+        title_label = tk.Label(root, text=f"Trigger {self.selected_trigger['id']} → Object {self.selected_object['id']}", 
+                              font=('Arial', 12, 'bold'))
+        title_label.pack(pady=10)
+        
+        # Checkbox frame
+        checkbox_frame = tk.Frame(root)
+        checkbox_frame.pack(pady=10)
+        
+        def on_appear_change():
+            if appear_var.get():
+                disappear_var.set(False)
+        
+        def on_disappear_change():
+            if disappear_var.get():
+                appear_var.set(False)
+        
+        # Appear section
+        appear_frame = tk.Frame(checkbox_frame)
+        appear_frame.pack(anchor='w', pady=5, fill='x')
+        
+        appear_cb = tk.Checkbutton(appear_frame, text="Appear", 
+                                  variable=appear_var, command=on_appear_change)
+        appear_cb.pack(side='left')
+        
+        appear_delay_label = tk.Label(appear_frame, text="Delay (sec):")
+        appear_delay_label.pack(side='left', padx=(20, 5))
+        
+        appear_delay_entry = tk.Entry(appear_frame, textvariable=appear_delay_var, width=8)
+        appear_delay_entry.pack(side='left', padx=5)
+        
+        # Disappear section  
+        disappear_frame = tk.Frame(checkbox_frame)
+        disappear_frame.pack(anchor='w', pady=5, fill='x')
+        
+        disappear_cb = tk.Checkbutton(disappear_frame, text="Disappear", 
+                                     variable=disappear_var, command=on_disappear_change)
+        disappear_cb.pack(side='left')
+        
+        disappear_delay_label = tk.Label(disappear_frame, text="Delay (sec):")
+        disappear_delay_label.pack(side='left', padx=(20, 5))
+        
+        disappear_delay_entry = tk.Entry(disappear_frame, textvariable=disappear_delay_var, width=8)
+        disappear_delay_entry.pack(side='left', padx=5)
+        
+        # Move section
+        move_frame = tk.Frame(checkbox_frame)
+        move_frame.pack(anchor='w', pady=5, fill='x')
+        
+        move_cb = tk.Checkbutton(move_frame, text="Move", variable=move_var)
+        move_cb.pack(side='left')
+        
+        # Delay entry for move
+        move_delay_label = tk.Label(move_frame, text="Delay (sec):")
+        move_delay_label.pack(side='left', padx=(20, 5))
+        
+        move_delay_entry = tk.Entry(move_frame, textvariable=move_delay_var, width=8)
+        move_delay_entry.pack(side='left', padx=5)
+        
+        # Time entry for move
+        time_label = tk.Label(move_frame, text="Duration (sec):")
+        time_label.pack(side='left', padx=(20, 5))
+        
+        # Use existing duration or default
+        default_time = str(self.move_duration)
+        time_var = tk.StringVar(value=default_time)
+        time_entry = tk.Entry(move_frame, textvariable=time_var, width=8)
+        time_entry.pack(side='left', padx=5)
+        
+        # Show move position status
+        move_status_label = tk.Label(move_frame, text="")
+        move_status_label.pack(side='left', padx=10)
+        
+        if self.temp_move_position:
+            move_status_label.config(text=f"Position: ({self.temp_move_position[0]}, {self.temp_move_position[1]})", fg='green')
+        else:
+            # Check for existing move action position
+            for action_data in existing_actions:
+                if action_data["action"] == "move" and "target_x" in action_data and "target_y" in action_data:
+                    move_status_label.config(text=f"Position: ({action_data['target_x']}, {action_data['target_y']})", fg='blue')
+                    break
+        
+        # Place button for move
+        def start_place_mode():
+            try:
+                duration = float(time_var.get())
+                if duration <= 0:
+                    raise ValueError("Duration must be positive")
+                
+                self.move_duration = duration
+                self.action_step = 2
+                self.ghost_cursor_object = self.selected_object.copy()
+                root.destroy()
+                messagebox.showinfo("Move Position", "Click on the map where the object should move to.")
+            except ValueError:
+                messagebox.showerror("Invalid Time", "Please enter a valid positive number for time.")
+        
+        place_btn = tk.Button(move_frame, text="Place", command=start_place_mode, bg='lightblue')
+        place_btn.pack(side='left', padx=10)
+        
+        # Buttons frame
+        button_frame = tk.Frame(root)
+        button_frame.pack(pady=20)
+        
+        def apply_action():
+            # Save state before making changes
+            self.save_state_to_undo()
+            
+            # Get current actions to modify
+            if "actions" not in self.selected_trigger:
+                self.selected_trigger["actions"] = {}
+            
+            obj_id = str(self.selected_object["id"])
+            
+            # Initialize actions list if needed
+            if obj_id not in self.selected_trigger["actions"]:
+                self.selected_trigger["actions"][obj_id] = []
+            elif isinstance(self.selected_trigger["actions"][obj_id], dict):
+                # Convert old single action format to list
+                old_action = self.selected_trigger["actions"][obj_id]
+                self.selected_trigger["actions"][obj_id] = [old_action]
+            
+            current_actions = self.selected_trigger["actions"][obj_id]
+            
+            # Remove existing actions of the same types we're managing
+            current_actions[:] = [action for action in current_actions 
+                                if action["action"] not in ["appear", "disappear", "move"]]
+            
+            # Clean up visual indicators for removed actions
+            self.cleanup_visual_indicators_for_object()
+            
+            # Add new actions based on checkbox states
+            actions_added = False
+            
+            if appear_var.get():
+                try:
+                    delay = float(appear_delay_var.get())
+                    if delay < 0:
+                        raise ValueError("Delay must be non-negative")
+                    
+                    action_data = {
+                        "action": "appear",
+                        "duration": 2.0,
+                        "delay": delay
+                    }
+                    current_actions.append(action_data)
+                    self.add_visual_indicator("appear")
+                    actions_added = True
+                except ValueError:
+                    messagebox.showerror("Invalid Delay", "Please enter a valid non-negative number for appear delay.")
+                    return
+            
+            if disappear_var.get():
+                try:
+                    delay = float(disappear_delay_var.get())
+                    if delay < 0:
+                        raise ValueError("Delay must be non-negative")
+                    
+                    action_data = {
+                        "action": "disappear",
+                        "duration": 2.0,
+                        "delay": delay
+                    }
+                    current_actions.append(action_data)
+                    self.add_visual_indicator("disappear")
+                    actions_added = True
+                except ValueError:
+                    messagebox.showerror("Invalid Delay", "Please enter a valid non-negative number for disappear delay.")
+                    return
+            
+            if move_var.get():
+                if self.temp_move_position:
+                    try:
+                        duration = float(time_var.get())
+                        delay = float(move_delay_var.get())
+                        if duration <= 0:
+                            raise ValueError("Duration must be positive")
+                        if delay < 0:
+                            raise ValueError("Delay must be non-negative")
+                        
+                        action_data = {
+                            "action": "move",
+                            "duration": duration,
+                            "delay": delay,
+                            "target_x": self.temp_move_position[0],
+                            "target_y": self.temp_move_position[1]
+                        }
+                        current_actions.append(action_data)
+                        self.add_visual_indicator("move", self.temp_move_position[0], self.temp_move_position[1])
+                        actions_added = True
+                    except ValueError as e:
+                        messagebox.showerror("Invalid Input", f"Please enter valid numbers: {str(e)}")
+                        return
+                else:
+                    messagebox.showinfo("Move Action", "Click the 'Place' button to set move destination first.")
+                    return
+            
+            # Clean up empty actions
+            if not current_actions:
+                del self.selected_trigger["actions"][obj_id]
+                if not self.selected_trigger["actions"]:
+                    del self.selected_trigger["actions"]
+            
+            action_count = len(current_actions) if current_actions else 0
+            print(f"Updated actions for trigger {self.selected_trigger['id']} -> object {self.selected_object['id']}: {action_count} actions")
+            
+            self.temp_move_position = None  # Clear temp position
+            root.destroy()
+            self.reset_action_mode()
+        
+        def cancel_action():
+            self.temp_move_position = None  # Clear temp position
+            root.destroy()
+            self.reset_action_mode()
+        
+        apply_btn = tk.Button(button_frame, text="Apply", command=apply_action, bg='lightgreen')
+        apply_btn.pack(side='left', padx=10)
+        
+        cancel_btn = tk.Button(button_frame, text="Cancel", command=cancel_action, bg='lightcoral')
+        cancel_btn.pack(side='left', padx=10)
+        
+        root.mainloop()
+    
+    def add_visual_indicator(self, action_type, target_x=None, target_y=None):
+        """Add visual indicators for an action"""
         if not self.selected_trigger or not self.selected_object:
             return
-        
-        action_data = {
-            "action": action_type,
-            "duration": duration
-        }
-        
-        if target_x is not None and target_y is not None:
-            action_data["target_x"] = target_x
-            action_data["target_y"] = target_y
-        
-        # Add action to trigger
-        if "actions" not in self.selected_trigger:
-            self.selected_trigger["actions"] = {}
-        
-        self.selected_trigger["actions"][str(self.selected_object["id"])] = action_data
         
         # Store connection line between trigger and object
         self.connection_lines.append({
@@ -468,8 +868,25 @@ class LevelEditor:
             ghost_obj["y"] = target_y
             ghost_obj["original"] = self.selected_object
             self.ghost_objects.append(ghost_obj)
+    
+    def cleanup_visual_indicators_for_object(self):
+        """Clean up visual indicators for the currently selected trigger-object pair"""
+        if not self.selected_trigger or not self.selected_object:
+            return
         
-        print(f"Action '{action_type}' added to trigger {self.selected_trigger['id']} for object {self.selected_object['id']}")
+        # Remove connection lines for this trigger-object pair
+        self.connection_lines = [conn for conn in self.connection_lines 
+                               if not (conn["trigger"] == self.selected_trigger and 
+                                     conn["object"] == self.selected_object)]
+        
+        # Remove ghost objects for this object
+        self.ghost_objects = [ghost for ghost in self.ghost_objects 
+                            if not ("original" in ghost and 
+                                  ghost["original"] == self.selected_object)]
+    
+    def add_trigger_action(self, action_type, target_x=None, target_y=None, duration=2.0, delay=0.0):
+        """Legacy method for compatibility - now redirects to new system"""
+        print(f"Legacy add_trigger_action called for {action_type} - use new dialog system instead")
     
     def reset_action_mode(self):
         """Reset action mode state"""
@@ -478,6 +895,7 @@ class LevelEditor:
         self.action_step = 0
         self.action_mode = False
         self.ghost_cursor_object = None
+        self.temp_move_position = None
         print("Action mode reset. Press 8 to enter action mode again.")
     
     def exit_action_mode(self):
@@ -486,6 +904,7 @@ class LevelEditor:
             self.action_mode = False
             self.selected_trigger = None
             self.selected_object = None
+            self.temp_move_position = None
             self.action_step = 0
             self.ghost_cursor_object = None
     
@@ -513,6 +932,40 @@ class LevelEditor:
             # Draw ground label
             text = self.small_font.render("Ground Level", True, GREEN)
             screen.blit(text, (10, ground_screen_y - 20))
+    
+    def draw_camera_view_indicators(self):
+        """Draw horizontal lines showing game camera view area (top and bottom boundaries)"""
+        # Calculate camera view boundaries in world coordinates
+        # Camera Y position follows the player with some offset
+        camera_center_world_y = self.camera_y
+        
+        # Camera view area in world coordinates (vertical)
+        camera_top = camera_center_world_y
+        camera_bottom = camera_center_world_y + GAME_SCREEN_HEIGHT
+        
+        # Convert to screen coordinates
+        camera_top_screen = camera_top - self.camera_y
+        camera_bottom_screen = camera_bottom - self.camera_y
+        
+        # Draw horizontal lines to indicate camera boundaries
+        if 0 <= camera_top_screen <= GAME_HEIGHT:
+            pygame.draw.line(screen, (255, 100, 100), (0, camera_top_screen), (SCREEN_WIDTH, camera_top_screen), 3)
+            # Label for top boundary
+            text = self.small_font.render("Camera Top", True, (255, 100, 100))
+            screen.blit(text, (10, camera_top_screen + 5))
+            
+        if 0 <= camera_bottom_screen <= GAME_HEIGHT:
+            pygame.draw.line(screen, (255, 100, 100), (0, camera_bottom_screen), (SCREEN_WIDTH, camera_bottom_screen), 3)
+            # Label for bottom boundary
+            text = self.small_font.render("Camera Bottom", True, (255, 100, 100))
+            screen.blit(text, (10, camera_bottom_screen - 20))
+            
+        # Draw camera center line (horizontal)
+        camera_center_screen_y = camera_center_world_y + (GAME_SCREEN_HEIGHT // 2) - self.camera_y
+        if 0 <= camera_center_screen_y <= GAME_HEIGHT:
+            pygame.draw.line(screen, (255, 150, 150), (0, camera_center_screen_y), (SCREEN_WIDTH, camera_center_screen_y), 1)
+            text = self.small_font.render("Camera Center", True, (255, 150, 150))
+            screen.blit(text, (SCREEN_WIDTH - 100, camera_center_screen_y - 15))
     
     def draw_objects(self):
         """Draw all level objects"""
@@ -567,24 +1020,38 @@ class LevelEditor:
             if -100 < screen_x < SCREEN_WIDTH + 100 and -100 < screen_y < GAME_HEIGHT + 100:
                 rect = pygame.Rect(screen_x, screen_y, trigger["width"], trigger["height"])
                 
-                # Draw orange translucent box
+                # Determine colors based on enabled state
+                enabled = trigger.get("enabled", True)
+                is_selected = trigger == self.selected_trigger
+                
+                if enabled:
+                    # Orange colors for enabled triggers
+                    fill_color = (255, 200, 0, 120) if is_selected else (255, 165, 0, 100)
+                    border_color = (255, 255, 0) if is_selected else ORANGE
+                    text_color = BLACK
+                else:
+                    # Gray colors for disabled triggers
+                    fill_color = (128, 128, 128, 120) if is_selected else (100, 100, 100, 100)
+                    border_color = (200, 200, 200) if is_selected else (128, 128, 128)
+                    text_color = (64, 64, 64)
+                
+                # Draw translucent box
                 surface = pygame.Surface((trigger["width"], trigger["height"]), pygame.SRCALPHA)
-                color = (255, 200, 0, 120) if trigger == self.selected_trigger else (255, 165, 0, 100)
-                surface.fill(color)
+                surface.fill(fill_color)
                 screen.blit(surface, (screen_x, screen_y))
                 
                 # Draw border
-                border_color = (255, 255, 0) if trigger == self.selected_trigger else ORANGE
                 pygame.draw.rect(screen, border_color, rect, 2)
                 
-                # Draw "TRIGGER" text in center
-                trigger_text = self.font.render("TRIGGER", True, BLACK)
+                # Draw "TRIGGER" text in center with status
+                status_suffix = " (OFF)" if not enabled else ""
+                trigger_text = self.font.render(f"TRIGGER{status_suffix}", True, text_color)
                 text_rect = trigger_text.get_rect(center=(screen_x + trigger["width"]//2, screen_y + trigger["height"]//2))
                 screen.blit(trigger_text, text_rect)
                 
                 # Draw object ID
                 if "id" in trigger:
-                    id_text = self.small_font.render(f"T{trigger['id']}", True, BLACK)
+                    id_text = self.small_font.render(f"T{trigger['id']}", True, text_color)
                     screen.blit(id_text, (screen_x + 2, screen_y + 2))
         
         # Draw pits
@@ -801,16 +1268,18 @@ class LevelEditor:
         controls = [
             "WASD/Arrows: Move Camera",
             "G: Toggle Grid",
+            "Ctrl+Z: Undo",
             "Enter: Save Level (with name)",
             "L: Load Level (with name)",
             "N: New Level",
-            "T: Test Level"
+            "T: Test Level",
+            "E: Toggle Trigger Enable/Disable"
         ]
         
         y_offset += 30
         x_offset = 10
         for i, control in enumerate(controls):
-            if i == 3:  # New line after 3 items
+            if i == 4:  # New line after 4 items
                 y_offset += 20
                 x_offset = 10
             text = self.small_font.render(control, True, WHITE)
@@ -949,7 +1418,8 @@ class LevelEditor:
                 "width": trigger["width"],
                 "height": trigger["height"],
                 "id": trigger.get("id", 0),
-                "actions": trigger.get("actions", {})
+                "actions": trigger.get("actions", {}),
+                "enabled": trigger.get("enabled", True)
             })
         
         level_data = {
@@ -977,6 +1447,9 @@ class LevelEditor:
     
     def load_level(self):
         """Load level from JSON file"""
+        # Save current state before loading
+        self.save_state_to_undo()
+        
         filename = os.path.join(self.maps_dir, f"{self.level_name}.json")
         try:
             with open(filename, 'r') as f:
@@ -987,6 +1460,14 @@ class LevelEditor:
             self.pits = []
             self.spikes = []
             self.trigger_boxes = []
+            
+            # Clear visual indicators
+            self.connection_lines = []
+            self.ghost_objects = []
+            
+            # Clear visual indicators
+            self.connection_lines = []
+            self.ghost_objects = []
             
             # Load yellow blocks
             for block_data in level_data.get("yellow_blocks", []):
@@ -1016,7 +1497,8 @@ class LevelEditor:
                     "width": trigger_data["width"],
                     "height": trigger_data["height"],
                     "id": trigger_data.get("id", 0),
-                    "actions": trigger_data.get("actions", {})
+                    "actions": trigger_data.get("actions", {}),
+                    "enabled": trigger_data.get("enabled", True)
                 })
             
             # Load pits
@@ -1037,6 +1519,9 @@ class LevelEditor:
                     max_id = obj["id"]
             self.next_object_id = max_id + 1
             
+            # Rebuild visual indicators after loading
+            self.rebuild_visual_indicators()
+            
             print(f"Level loaded from {filename}")
             
         except FileNotFoundError:
@@ -1046,10 +1531,18 @@ class LevelEditor:
     
     def new_level(self):
         """Create a new empty level"""
+        # Save current state before clearing
+        self.save_state_to_undo()
+        
         self.yellow_blocks = []
         self.pits = []
         self.spikes = []
         self.trigger_boxes = []
+        
+        # Clear visual indicators
+        self.connection_lines = []
+        self.ghost_objects = []
+        
         self.flag_x = 2000
         self.start_x = 100
         self.camera_x = 0
@@ -1090,6 +1583,186 @@ class LevelEditor:
         except FileNotFoundError:
             print("dani_jatek.py not found!")
     
+    def toggle_trigger_at_mouse(self):
+        """Toggle enabled state of trigger at mouse position"""
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        if mouse_y < GAME_HEIGHT:  # Only in game area
+            world_x, world_y = self.screen_to_world(mouse_x, mouse_y)
+            
+            # Find trigger at mouse position
+            for trigger in self.trigger_boxes:
+                if (trigger["x"] <= world_x < trigger["x"] + trigger["width"] and
+                    trigger["y"] <= world_y < trigger["y"] + trigger["height"]):
+                    
+                    # Save state before making changes
+                    self.save_state_to_undo()
+                    
+                    # Toggle enabled state
+                    current_state = trigger.get("enabled", True)
+                    trigger["enabled"] = not current_state
+                    
+                    status = "enabled" if trigger["enabled"] else "disabled"
+                    print(f"Trigger {trigger['id']} is now {status}")
+                    return
+            
+            print("No trigger found at mouse position. Hover over a trigger and press 'E' to toggle it.")
+    
+    def rebuild_visual_indicators(self):
+        """Rebuild connection lines and ghost objects from loaded level data"""
+        # Clear existing indicators
+        self.connection_lines = []
+        self.ghost_objects = []
+        
+        print("Rebuilding visual indicators...")
+        
+        # Rebuild connection lines and ghost objects from trigger actions
+        for trigger in self.trigger_boxes:
+            trigger_actions = trigger.get("actions", {})
+            
+            for target_id_str, action_data in trigger_actions.items():
+                action_type = action_data.get("action", "appear")
+                
+                # Find target object by ID
+                target_object = None
+                
+                # Check all object types for the target ID
+                for obj_list, obj_type in [(self.yellow_blocks, "yellow_block"), 
+                                         (self.spikes, "spike"),
+                                         (self.trigger_boxes, "trigger")]:
+                    for obj in obj_list:
+                        if str(obj.get("id")) == str(target_id_str):
+                            target_object = obj.copy()
+                            target_object["type"] = obj_type
+                            break
+                    if target_object:
+                        break
+                
+                if target_object:
+                    # Create connection line
+                    self.connection_lines.append({
+                        "trigger": trigger,
+                        "object": target_object,
+                        "action": action_type
+                    })
+                    
+                    # Create ghost object for move actions
+                    if action_type == "move":
+                        target_x = action_data.get("target_x")
+                        target_y = action_data.get("target_y")
+                        if target_x is not None and target_y is not None:
+                            ghost_obj = target_object.copy()
+                            ghost_obj["x"] = target_x
+                            ghost_obj["y"] = target_y
+                            ghost_obj["original"] = target_object
+                            self.ghost_objects.append(ghost_obj)
+                    
+                    print(f"Rebuilt: Trigger {trigger['id']} -> {action_type} -> Object {target_id_str}")
+                else:
+                    print(f"Warning: Target object {target_id_str} not found for trigger {trigger['id']}")
+        
+        print(f"Rebuilt {len(self.connection_lines)} connections and {len(self.ghost_objects)} ghost objects")
+    
+    def save_state_to_undo(self):
+        """Save current state to undo history"""
+        state = {
+            'yellow_blocks': [block.copy() for block in self.yellow_blocks],
+            'pits': [pit.copy() for pit in self.pits],
+            'spikes': [spike.copy() for spike in self.spikes],
+            'trigger_boxes': [trigger.copy() for trigger in self.trigger_boxes],
+            'flag_x': self.flag_x,
+            'start_x': self.start_x,
+            'next_object_id': self.next_object_id,
+            'connection_lines': [conn.copy() for conn in self.connection_lines],
+            'ghost_objects': [ghost.copy() for ghost in self.ghost_objects]
+        }
+        
+        self.undo_history.append(state)
+        
+        # Clear redo history when new action is performed
+        self.redo_history.clear()
+        
+        # Limit undo history size
+        if len(self.undo_history) > self.max_undo_history:
+            self.undo_history.pop(0)
+    
+    def undo_last_action(self):
+        """Undo the last action"""
+        if not self.undo_history:
+            print("Nothing to undo")
+            return
+        
+        # Save current state to redo history before undoing
+        current_state = {
+            'yellow_blocks': [block.copy() for block in self.yellow_blocks],
+            'pits': [pit.copy() for pit in self.pits],
+            'spikes': [spike.copy() for spike in self.spikes],
+            'trigger_boxes': [trigger.copy() for trigger in self.trigger_boxes],
+            'flag_x': self.flag_x,
+            'start_x': self.start_x,
+            'next_object_id': self.next_object_id,
+            'connection_lines': [line.copy() for line in self.connection_lines],
+            'ghost_objects': [ghost.copy() for ghost in self.ghost_objects]
+        }
+        self.redo_history.append(current_state)
+        
+        # Limit redo history size
+        if len(self.redo_history) > self.max_undo_history:
+            self.redo_history.pop(0)
+        
+        # Restore the last saved state
+        last_state = self.undo_history.pop()
+        
+        self.yellow_blocks = last_state['yellow_blocks']
+        self.pits = last_state['pits']
+        self.spikes = last_state['spikes']
+        self.trigger_boxes = last_state['trigger_boxes']
+        self.flag_x = last_state['flag_x']
+        self.start_x = last_state['start_x']
+        self.next_object_id = last_state['next_object_id']
+        self.connection_lines = last_state['connection_lines']
+        self.ghost_objects = last_state['ghost_objects']
+        
+        print("Undid last action")
+    
+    def redo_last_action(self):
+        """Redo the last undone action"""
+        if not self.redo_history:
+            print("Nothing to redo")
+            return
+        
+        # Save current state to undo history before redoing
+        current_state = {
+            'yellow_blocks': [block.copy() for block in self.yellow_blocks],
+            'pits': [pit.copy() for pit in self.pits],
+            'spikes': [spike.copy() for spike in self.spikes],
+            'trigger_boxes': [trigger.copy() for trigger in self.trigger_boxes],
+            'flag_x': self.flag_x,
+            'start_x': self.start_x,
+            'next_object_id': self.next_object_id,
+            'connection_lines': [line.copy() for line in self.connection_lines],
+            'ghost_objects': [ghost.copy() for ghost in self.ghost_objects]
+        }
+        self.undo_history.append(current_state)
+        
+        # Limit undo history size
+        if len(self.undo_history) > self.max_undo_history:
+            self.undo_history.pop(0)
+        
+        # Restore the redo state
+        redo_state = self.redo_history.pop()
+        
+        self.yellow_blocks = redo_state['yellow_blocks']
+        self.pits = redo_state['pits']
+        self.spikes = redo_state['spikes']
+        self.trigger_boxes = redo_state['trigger_boxes']
+        self.flag_x = redo_state['flag_x']
+        self.start_x = redo_state['start_x']
+        self.next_object_id = redo_state['next_object_id']
+        self.connection_lines = redo_state['connection_lines']
+        self.ghost_objects = redo_state['ghost_objects']
+        
+        print("Redid last action")
+    
     def run(self):
         """Main editor loop"""
         running = True
@@ -1102,6 +1775,7 @@ class LevelEditor:
             self.draw_sky_background()
             self.draw_grid()
             self.draw_ground_reference()
+            self.draw_camera_view_indicators()
             self.draw_objects()
             self.draw_drag_preview()
             self.draw_action_instructions()  # Draw instructions at top

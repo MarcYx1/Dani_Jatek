@@ -98,28 +98,39 @@ class Player(pygame.sprite.Sprite):
         self.vel_y = 0
         self.on_ground = False
     
-    def update(self, platforms, camera):
+    def update(self, platforms, camera, game_objects=None):
         keys = pygame.key.get_pressed()
         
+        # Combine platforms and game_objects for collision detection
+        all_platforms = list(platforms)
+        if game_objects:
+            # Add visible game objects that can be collided with
+            for obj in game_objects.values():
+                if getattr(obj, 'is_visible', True) and getattr(obj, 'visible', True):
+                    # Create a temporary platform-like object for collision
+                    temp_platform = type('TempPlatform', (), {
+                        'rect': pygame.Rect(getattr(obj, 'current_x', obj.world_x), 
+                                          getattr(obj, 'current_y', obj.world_y), 
+                                          obj.width, obj.height),
+                        'obj_type': getattr(obj, 'obj_type', 'platform'),
+                        'is_visible': True,
+                        'is_moving': getattr(obj, 'is_moving', False),
+                        'move_velocity_y': getattr(obj, 'move_velocity_y', 0),
+                        'move_velocity_x': getattr(obj, 'move_velocity_x', 0),
+                        'spike': getattr(obj, 'spike', False)
+                    })()
+                    all_platforms.append(temp_platform)
+        
         # Store old position for collision detection
-        old_x = self.rect.x
+        old_rect = self.rect.copy()
         
-        # Horizontal movement
+        # Handle input and movement
+        horizontal_input = 0
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            self.rect.x -= PLAYER_SPEED
+            horizontal_input = -1
         if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            self.rect.x += PLAYER_SPEED
-        
-        # Check horizontal collision
-        for platform in platforms:
-            if self.rect.colliderect(platform.rect):
-                # Moving right and hit left side of platform
-                if old_x < self.rect.x:
-                    self.rect.right = platform.rect.left
-                # Moving left and hit right side of platform
-                elif old_x > self.rect.x:
-                    self.rect.left = platform.rect.right
-        
+            horizontal_input = 1
+            
         # Jumping
         if (keys[pygame.K_SPACE] or keys[pygame.K_w] or keys[pygame.K_UP]) and self.on_ground:
             self.vel_y = JUMP_STRENGTH
@@ -127,32 +138,174 @@ class Player(pygame.sprite.Sprite):
         
         # Apply gravity
         self.vel_y += GRAVITY
-        old_y = self.rect.y
+        
+        # Move horizontally first
+        if horizontal_input != 0:
+            self.rect.x += horizontal_input * PLAYER_SPEED
+            
+        # Check for horizontal collisions and wall pushing
+        collision_result = self._handle_horizontal_collisions(all_platforms, old_rect, horizontal_input)
+        if collision_result == "death":
+            return "death"
+        
+        # Move vertically
         self.rect.y += self.vel_y
         
-        # Check vertical collision
-        self.on_ground = False
-        for platform in platforms:
-            if platform.is_visible and self.rect.colliderect(platform.rect):
-                if platform.obj_type == "spikes":
-                    return "spikes"  # Death by spikes
-                elif self.vel_y > 0:  # Falling down
-                    self.rect.bottom = platform.rect.top
-                    self.vel_y = 0
-                    self.on_ground = True
-                elif self.vel_y < 0:  # Jumping up
-                    self.rect.top = platform.rect.bottom
-                    self.vel_y = 0
+        # Check for vertical collisions
+        collision_result = self._handle_vertical_collisions(all_platforms, old_rect)
+        if collision_result == "death":
+            return "death"
+        
+        # Check for pinch detection (being squeezed by moving platforms)
+        if self._check_pinch_detection(all_platforms, old_rect):
+            return "pinch"
         
         # Prevent player from going too far left
         if self.rect.left < 0:
             self.rect.left = 0
         
-        # Note: Spike collision is now handled in the main game update loop
-        
         # Death by falling
         if self.rect.top > SCREEN_HEIGHT + 100:
-            return True  # Return True to indicate death
+            return "death"
+            
+        return False
+    
+    def _handle_horizontal_collisions(self, platforms, old_rect, horizontal_input):
+        """Handle horizontal movement collisions and wall pushing"""
+        for platform in platforms:
+            if not getattr(platform, 'is_visible', True):
+                continue
+                
+            if self.rect.colliderect(platform.rect):
+                # Check for spike collision
+                if hasattr(platform, 'obj_type') and platform.obj_type == "spikes":
+                    return "death"
+                
+                # Determine collision side based on movement direction and overlap
+                if horizontal_input > 0:  # Moving right, hit left side of platform
+                    self.rect.right = platform.rect.left
+                elif horizontal_input < 0:  # Moving left, hit right side of platform
+                    self.rect.left = platform.rect.right
+                else:
+                    # Player not moving but platform might be pushing
+                    # Check if platform is moving and pushing player
+                    if hasattr(platform, 'is_moving') and platform.is_moving:
+                        # Platform is moving, check which side it's pushing from
+                        platform_center_x = platform.rect.centerx
+                        player_center_x = self.rect.centerx
+                        
+                        if platform_center_x < player_center_x:  # Platform pushing from left
+                            self.rect.left = platform.rect.right
+                        else:  # Platform pushing from right
+                            self.rect.right = platform.rect.left
+        
+        return None
+    
+    def _handle_vertical_collisions(self, platforms, old_rect):
+        """Handle vertical movement collisions"""
+        self.on_ground = False
+        
+        for platform in platforms:
+            if not getattr(platform, 'is_visible', True):
+                continue
+                
+            if self.rect.colliderect(platform.rect):
+                # Check for spike collision
+                if hasattr(platform, 'obj_type') and platform.obj_type == "spikes":
+                    return "death"
+                
+                # Determine collision direction
+                if self.vel_y > 0:  # Falling down, hit top of platform
+                    self.rect.bottom = platform.rect.top
+                    self.vel_y = 0
+                    self.on_ground = True
+                elif self.vel_y < 0:  # Moving up, hit bottom of platform
+                    self.rect.top = platform.rect.bottom
+                    self.vel_y = 0
+                else:
+                    # No vertical velocity but still colliding - platform might be moving
+                    if hasattr(platform, 'is_moving') and platform.is_moving:
+                        # Use platform's movement velocity to determine proper collision response
+                        platform_velocity_y = getattr(platform, 'move_velocity_y', 0)
+                        
+                        # Determine which side of the platform the player is on
+                        player_bottom = old_rect.bottom
+                        player_top = old_rect.top
+                        platform_top = platform.rect.top
+                        platform_bottom = platform.rect.bottom
+                        
+                        # If player was above platform before collision and platform is moving up
+                        if player_bottom <= platform_top + 5 and platform_velocity_y < 0:
+                            # Platform moving up, carry player with it
+                            self.rect.bottom = platform.rect.top
+                            self.vel_y = platform_velocity_y  # Match platform's upward velocity
+                            self.on_ground = True
+                        # If player was below platform before collision and platform is moving down
+                        elif player_top >= platform_bottom - 5 and platform_velocity_y > 0:
+                            # Platform moving down, push player down
+                            self.rect.top = platform.rect.bottom
+                            self.vel_y = max(1, platform_velocity_y)  # Push player down
+                        else:
+                            # Fallback to position-based logic for stationary or horizontal movement
+                            platform_center_y = platform.rect.centery
+                            player_center_y = self.rect.centery
+                            
+                            if platform_center_y < player_center_y:  # Platform above
+                                self.rect.top = platform.rect.bottom
+                                self.vel_y = 1
+                            else:  # Platform below
+                                self.rect.bottom = platform.rect.top
+                                self.vel_y = 0
+                                self.on_ground = True
+        
+        return None
+    
+    def _check_pinch_detection(self, platforms, old_rect):
+        """Check if player is being pinched between moving platforms"""
+        # Get all platforms currently colliding with player
+        colliding_platforms = []
+        for platform in platforms:
+            if (getattr(platform, 'is_visible', True) and 
+                self.rect.colliderect(platform.rect) and
+                hasattr(platform, 'is_moving') and platform.is_moving):
+                colliding_platforms.append(platform)
+        
+        # If colliding with 2 or more moving platforms, check for pinch
+        if len(colliding_platforms) >= 2:
+            return True
+            
+        # Check if player is squeezed between a moving platform and a static one
+        for moving_platform in colliding_platforms:
+            for static_platform in platforms:
+                if (static_platform != moving_platform and 
+                    getattr(static_platform, 'is_visible', True) and
+                    self.rect.colliderect(static_platform.rect)):
+                    
+                    # Calculate if platforms are on opposite sides
+                    moving_center = moving_platform.rect.center
+                    static_center = static_platform.rect.center
+                    player_center = self.rect.center
+                    
+                    # Check for horizontal pinch
+                    if ((moving_center[0] < player_center[0] < static_center[0]) or 
+                        (static_center[0] < player_center[0] < moving_center[0])):
+                        # Check if platforms are close enough horizontally to cause pinch
+                        gap = abs(moving_platform.rect.right - static_platform.rect.left)
+                        if gap == 0:  # No gap, definite pinch
+                            gap = abs(static_platform.rect.right - moving_platform.rect.left)
+                        if gap <= self.rect.width:
+                            return True
+                    
+                    # Check for vertical pinch
+                    if ((moving_center[1] < player_center[1] < static_center[1]) or 
+                        (static_center[1] < player_center[1] < moving_center[1])):
+                        # Check if platforms are close enough vertically to cause pinch
+                        gap = abs(moving_platform.rect.bottom - static_platform.rect.top)
+                        if gap == 0:  # No gap, definite pinch
+                            gap = abs(static_platform.rect.bottom - moving_platform.rect.top)
+                        if gap <= self.rect.height:
+                            return True
+        
         return False
 
 class Tile:
@@ -217,6 +370,12 @@ class GameObject(pygame.sprite.Sprite):
         self.is_moving = False
         self.is_visible = True
         
+        # Movement direction tracking
+        self.prev_x = x
+        self.prev_y = y
+        self.move_velocity_x = 0
+        self.move_velocity_y = 0
+        
         # Create collision rect
         self.rect = pygame.Rect(x, y, width, height)
     
@@ -226,9 +385,21 @@ class GameObject(pygame.sprite.Sprite):
             elapsed = pygame.time.get_ticks() - self.move_start_time
             progress = min(elapsed / (self.move_duration * 1000), 1.0)
             
+            # Store previous position
+            self.prev_x = self.world_x
+            self.prev_y = self.world_y
+            
             # Linear interpolation
-            self.world_x = self.original_x + (self.target_x - self.original_x) * progress
-            self.world_y = self.original_y + (self.target_y - self.original_y) * progress
+            new_x = self.original_x + (self.target_x - self.original_x) * progress
+            new_y = self.original_y + (self.target_y - self.original_y) * progress
+            
+            # Calculate movement velocity (pixels per frame)
+            self.move_velocity_x = new_x - self.world_x
+            self.move_velocity_y = new_y - self.world_y
+            
+            # Update positions
+            self.world_x = new_x
+            self.world_y = new_y
             
             # Update all position attributes for consistency
             self.current_x = self.world_x
@@ -270,6 +441,11 @@ class GameObject(pygame.sprite.Sprite):
             self.move_duration = kwargs.get("duration", 2.0)
             self.move_start_time = pygame.time.get_ticks()
             self.is_moving = True
+            # Reset movement tracking
+            self.prev_x = self.world_x
+            self.prev_y = self.world_y
+            self.move_velocity_x = 0
+            self.move_velocity_y = 0
 
 class Platform(GameObject):
     def __init__(self, x, y, width, height, platform_type="yellow_block", obj_id=None):
@@ -284,6 +460,7 @@ class TriggerBox(GameObject):
         super().__init__(x, y, width, height, "trigger", obj_id)
         self.linked_objects = []  # IDs of objects this trigger affects
         self.triggered = False
+        self.enabled = True  # Whether this trigger is currently active
         self.trigger_actions = {}  # obj_id: {"action": "move", "target_x": x, "target_y": y, "duration": 2.0}
         # Ensure position attributes exist
         self.current_x = x
@@ -470,6 +647,9 @@ class Game:
         except:
             print("Warning: Could not load char.png for health display")
             self.health_icon = None
+        
+        # Delayed action system
+        self.delayed_actions = []  # List of (execution_time, action_data, obj_id_str)
     
     def check_if_should_start_invisible(self, obj_id, map_data):
         """Check if an object should start invisible because it has an 'appear' action"""
@@ -477,8 +657,18 @@ class Game:
         for trigger in trigger_boxes:
             actions = trigger.get("actions", {})
             for target_id, action_data in actions.items():
-                if str(target_id) == str(obj_id) and action_data.get("action") == "appear":
-                    return True
+                if str(target_id) == str(obj_id):
+                    # Handle both single action (dict) and multiple actions (list)
+                    actions_list = []
+                    if isinstance(action_data, dict):
+                        actions_list = [action_data]
+                    elif isinstance(action_data, list):
+                        actions_list = action_data
+                    
+                    # Check if any action is "appear"
+                    for action in actions_list:
+                        if action.get("action") == "appear":
+                            return True
         return False
         
     def load_map(self, map_name):
@@ -622,6 +812,60 @@ class Game:
     def return_to_menu(self):
         self.game_state = "menu"
         self.level_completed = False
+    
+    def resolve_player_wall_collision(self, appearing_object):
+        """Resolve collision when a wall appears inside the player by moving player to nearest safe position"""
+        if not appearing_object or not hasattr(appearing_object, 'rect'):
+            return
+        
+        # Check if player is actually colliding with the appearing object
+        if not self.player.rect.colliderect(appearing_object.rect):
+            return
+        
+        print(f"Player inside appearing object at {appearing_object.rect.x}, {appearing_object.rect.y}")
+        
+        # Calculate distances to each side of the object
+        player_center_x = self.player.rect.centerx
+        player_center_y = self.player.rect.centery
+        
+        # Distances to each edge
+        dist_to_left = abs(player_center_x - appearing_object.rect.left)
+        dist_to_right = abs(player_center_x - appearing_object.rect.right)
+        dist_to_top = abs(player_center_y - appearing_object.rect.top)
+        dist_to_bottom = abs(player_center_y - appearing_object.rect.bottom)
+        
+        # Find the minimum distance and corresponding position
+        distances = [
+            (dist_to_left, 'left'),
+            (dist_to_right, 'right'),
+            (dist_to_top, 'top'),
+            (dist_to_bottom, 'bottom')
+        ]
+        
+        min_dist, closest_side = min(distances)
+        
+        # Position player at the closest safe side
+        if closest_side == 'left':
+            self.player.rect.right = appearing_object.rect.left
+            print("Moved player to left side of object")
+        elif closest_side == 'right':
+            self.player.rect.left = appearing_object.rect.right
+            print("Moved player to right side of object")
+        elif closest_side == 'top':
+            self.player.rect.bottom = appearing_object.rect.top
+            self.player.vel_y = 0
+            self.player.on_ground = True
+            print("Moved player to top of object")
+        elif closest_side == 'bottom':
+            self.player.rect.top = appearing_object.rect.bottom
+            self.player.vel_y = 0
+            print("Moved player to bottom of object")
+        
+        # Ensure player doesn't go off screen
+        if self.player.rect.left < 0:
+            self.player.rect.left = 0
+        if self.player.rect.top < 0:
+            self.player.rect.top = 0
         
     def respawn_player(self):
         """Respawn player at start position without resetting lives"""
@@ -846,14 +1090,22 @@ class Game:
         if self.game_state == "playing":
             dt = clock.get_time() / 1000.0  # Delta time in seconds
             
+            # Process delayed actions
+            current_time = pygame.time.get_ticks()
+            actions_to_execute = [action for action in self.delayed_actions if current_time >= action[0]]
+            for execution_time, action_data, obj_id_str in actions_to_execute:
+                self.execute_trigger_action(action_data, obj_id_str)
+                self.delayed_actions.remove((execution_time, action_data, obj_id_str))
+            
             # Update all game objects
             for obj in self.game_objects.values():
                 obj.update_position(dt)
             
             # Update player
-            player_died = self.player.update(self.platforms, self.camera)
+            player_collision_result = self.player.update(self.platforms, self.camera, self.game_objects)
             
-            # Check spike collisions from all sides
+            # Check spike collisions from all sides (additional check for game objects)
+            spike_death = False
             for obj in self.game_objects.values():
                 if hasattr(obj, 'spike') and obj.spike:
                     is_visible = getattr(obj, 'visible', True) and getattr(obj, 'is_visible', True)
@@ -861,13 +1113,29 @@ class Game:
                         spike_rect = pygame.Rect(obj.current_x, obj.current_y, obj.width, obj.height)
                         if self.player.rect.colliderect(spike_rect):
                             print(f"Player hit spike at {obj.current_x}, {obj.current_y}!")
-                            player_died = True
+                            spike_death = True
                             break
             
-            # Handle player death
+            # Handle player death from various causes
+            player_died = False
+            death_message = "Player died!"
+            
+            if player_collision_result == "death":
+                player_died = True
+                death_message = "Player died from collision!"
+            elif player_collision_result == "pinch":
+                player_died = True
+                death_message = "Player was crushed by moving platforms!"
+            elif player_collision_result:  # Any other truthy value (like True for falling)
+                player_died = True
+                death_message = "Player died from falling!"
+            elif spike_death:
+                player_died = True
+                death_message = "Player hit spikes!"
+            
             if player_died:
                 self.lives -= 1
-                print(f"Player died! Lives remaining: {self.lives}")
+                print(f"{death_message} Lives remaining: {self.lives}")
                 
                 # Check if player is on 1 health and safe mode is not enabled
                 if self.lives == 1 and not safe_mode:
@@ -885,6 +1153,10 @@ class Game:
             
             # Check trigger boxes
             for trigger in self.trigger_boxes:
+                # Only process enabled triggers
+                if not trigger.enabled:
+                    continue
+                    
                 # Create trigger rect for collision detection
                 trigger_rect = pygame.Rect(trigger.current_x, trigger.current_y, trigger.width, trigger.height)
                 if self.player.rect.colliderect(trigger_rect) and not trigger.triggered:
@@ -892,21 +1164,24 @@ class Game:
                     print(f"Trigger {trigger.obj_id} activated!")
                     # Execute all trigger actions
                     for obj_id_str, action_data in trigger.trigger_actions.items():
-                        # Find target object by ID
-                        target_obj = None
-                        for obj in self.game_objects.values():
-                            if hasattr(obj, 'obj_id') and str(obj.obj_id) == str(obj_id_str):
-                                target_obj = obj
-                                break
+                        # Handle both single action (old format) and multiple actions (new format)
+                        actions_list = []
+                        if isinstance(action_data, dict):
+                            actions_list = [action_data]  # Single action
+                        elif isinstance(action_data, list):
+                            actions_list = action_data  # Multiple actions
                         
-                        if target_obj:
-                            print(f"Executing {action_data.get('action', 'appear')} on object {obj_id_str}")
-                            target_obj.trigger_action(
-                                action_data.get("action", "appear"),
-                                target_x=action_data.get("target_x", target_obj.current_x),
-                                target_y=action_data.get("target_y", target_obj.current_y),
-                                duration=action_data.get("duration", 2.0)
-                            )
+                        for single_action in actions_list:
+                            action_type = single_action.get("action", "appear")
+                            delay = single_action.get("delay", 0.0)
+                            
+                            # Schedule action with delay if needed
+                            if delay > 0:
+                                self.schedule_delayed_action(single_action, obj_id_str, delay)
+                                continue
+                            
+                            # Execute immediately if no delay
+                            self.execute_trigger_action(single_action, obj_id_str)
             
             # Update camera
             self.camera.update(self.player)
@@ -916,6 +1191,54 @@ class Game:
                 if not self.level_completed:
                     self.level_completed = True
                     print("Level completed! Press R to restart or ESC for menu.")
+    
+    def schedule_delayed_action(self, action_data, obj_id_str, delay):
+        """Schedule an action to be executed after a delay"""
+        execution_time = pygame.time.get_ticks() + int(delay * 1000)  # Convert seconds to milliseconds
+        self.delayed_actions.append((execution_time, action_data, obj_id_str))
+        print(f"Scheduled {action_data['action']} for object {obj_id_str} in {delay} seconds")
+    
+    def execute_trigger_action(self, action_data, obj_id_str):
+        """Execute a single trigger action immediately"""
+        action_type = action_data.get("action", "appear")
+        
+        # Handle trigger enable/disable actions
+        if action_type in ["enable", "disable"]:
+            target_trigger = None
+            for t in self.trigger_boxes:
+                if hasattr(t, 'obj_id') and str(t.obj_id) == str(obj_id_str):
+                    target_trigger = t
+                    break
+            
+            if target_trigger:
+                if action_type == "enable":
+                    target_trigger.enabled = True
+                    target_trigger.triggered = False  # Reset triggered state when enabled
+                    print(f"Enabled trigger {obj_id_str}")
+                elif action_type == "disable":
+                    target_trigger.enabled = False
+                    print(f"Disabled trigger {obj_id_str}")
+            return
+        
+        # Handle regular object actions
+        target_obj = None
+        for obj in self.game_objects.values():
+            if hasattr(obj, 'obj_id') and str(obj.obj_id) == str(obj_id_str):
+                target_obj = obj
+                break
+        
+        if target_obj:
+            print(f"Executing {action_type} on object {obj_id_str}")
+            target_obj.trigger_action(
+                action_type,
+                target_x=action_data.get("target_x", target_obj.current_x),
+                target_y=action_data.get("target_y", target_obj.current_y),
+                duration=action_data.get("duration", 2.0)
+            )
+            
+
+        else:
+            print(f"Warning: Target object {obj_id_str} not found for action {action_type}")
     
     def draw(self):
         if self.game_state == "menu":

