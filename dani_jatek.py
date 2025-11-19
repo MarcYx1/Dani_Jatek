@@ -455,6 +455,29 @@ class Platform(GameObject):
         self.current_x = x
         self.current_y = y
 
+class TextElement(GameObject):
+    def __init__(self, x, y, width, height, text, obj_id=None):
+        super().__init__(x, y, width, height, "text", obj_id)
+        self.text = text
+        self.font = pygame.font.Font(None, 24)
+        # Ensure position attributes exist
+        self.current_x = x
+        self.current_y = y
+    
+    def draw(self, screen, camera):
+        """Draw the text element"""
+        if not (getattr(self, 'visible', True) and getattr(self, 'is_visible', True)):
+            return
+            
+        screen_x = self.current_x - camera.x
+        screen_y = self.current_y - camera.y
+        
+        # Only draw if visible on screen
+        if -100 < screen_x < SCREEN_WIDTH + 100 and -100 < screen_y < SCREEN_HEIGHT + 100:
+            # Draw only the text (no background or border)
+            text_surface = self.font.render(self.text, True, (255, 255, 255))
+            screen.blit(text_surface, (screen_x, screen_y))
+
 class TriggerBox(GameObject):
     def __init__(self, x, y, width, height, obj_id=None):
         super().__init__(x, y, width, height, "trigger", obj_id)
@@ -630,6 +653,7 @@ class Game:
         self.player = Player(100, 300)
         self.platforms = []
         self.trigger_boxes = []
+        self.text_elements = []
         self.game_objects = {}  # obj_id: GameObject mapping
         self.flag = None
         self.current_map = "level1"
@@ -680,6 +704,7 @@ class Game:
             # Clear existing objects
             self.platforms.clear()
             self.trigger_boxes.clear()
+            self.text_elements.clear()
             self.game_objects.clear()
             
             # Get level width from flag position or use default
@@ -750,9 +775,31 @@ class Game:
                     obj_id
                 )
                 trigger.trigger_actions = trigger_data.get("actions", {})
+                trigger.enabled = trigger_data.get("enabled", True)  # Load enabled state from JSON
                 trigger.triggered = False
                 self.trigger_boxes.append(trigger)
                 # Don't add to game_objects as they're invisible
+            
+            # Load text elements
+            for text_data in map_data.get("text_elements", []):
+                obj_id = text_data.get("id", f"text_{text_data['x']}_{text_data['y']}")
+                text_element = TextElement(
+                    text_data["x"],
+                    text_data["y"],
+                    text_data["width"],
+                    text_data["height"],
+                    text_data["text"],
+                    obj_id
+                )
+                # Check if this text has an 'appear' action - if so, start invisible
+                should_start_invisible = self.check_if_should_start_invisible(obj_id, map_data)
+                if should_start_invisible:
+                    text_element.is_visible = False
+                    text_element.visible = False
+                    print(f"Text element {obj_id} starting invisible (has appear action)")
+                
+                self.text_elements.append(text_element)
+                self.game_objects[obj_id] = text_element
             
             # Load flag
             if flag_data:
@@ -1330,6 +1377,10 @@ class Game:
             #         trigger_screen_y > -trigger.height and trigger_screen_y < SCREEN_HEIGHT):
             #         pygame.draw.rect(screen, (255, 0, 0, 100), 
             #                        (trigger_screen_x, trigger_screen_y, trigger.width, trigger.height))
+            
+            # Draw text elements
+            for text_element in self.text_elements:
+                text_element.draw(screen, self.camera)
             
             # Draw flag with camera offset
             if self.flag:

@@ -4,6 +4,7 @@ import os
 import sys
 import tkinter as tk
 from tkinter import messagebox, simpledialog
+import tkinter as tk
 
 # Helper function for resource paths (PyInstaller compatibility)
 def resource_path(relative_path):
@@ -74,10 +75,11 @@ class LevelEditor:
         self.pits = []
         self.spikes = []
         self.trigger_boxes = []
+        self.text_elements = []
         self.flag_x = 2000
         self.start_x = 100  # Player start position
         self.grid_visible = True
-        self.current_tool = "yellow_block"  # "yellow_block", "pit", "flag", "start", "spike", "trigger_box", "erase"
+        self.current_tool = "yellow_block"  # "yellow_block", "pit", "flag", "start", "spike", "trigger_box", "text", "erase"
         self.next_object_id = 1
         self.selected_trigger = None
         self.selected_object = None
@@ -169,9 +171,12 @@ class LevelEditor:
                     self.current_tool = "trigger_box"
                     self.exit_action_mode()
                 elif event.key == pygame.K_7:
-                    self.current_tool = "erase"
+                    self.current_tool = "text"
                     self.exit_action_mode()
                 elif event.key == pygame.K_8:
+                    self.current_tool = "erase"
+                    self.exit_action_mode()
+                elif event.key == pygame.K_9:
                     # Exit placement modes when entering action mode
                     if not self.action_mode:
                         self.dragging = False
@@ -259,6 +264,32 @@ class LevelEditor:
                     "id": self.next_object_id
                 })
                 self.next_object_id += 1
+        elif self.current_tool == "text":
+            # Prompt for text content
+            root = tk.Tk()
+            root.withdraw()
+            text_content = simpledialog.askstring("Text Element", "Enter text content:")
+            root.destroy()
+            
+            if text_content:
+                # Check if text already exists at this position
+                text_exists = False
+                for existing_text in self.text_elements:
+                    if existing_text["x"] == snapped_x and existing_text["y"] == snapped_y:
+                        text_exists = True
+                        break
+                
+                # Only add text if none exists at this position
+                if not text_exists:
+                    self.text_elements.append({
+                        "x": snapped_x,
+                        "y": snapped_y,
+                        "width": len(text_content) * 12,  # Approximate width based on text length
+                        "height": 24,  # Standard text height
+                        "text": text_content,
+                        "id": self.next_object_id
+                    })
+                    self.next_object_id += 1
         elif self.current_tool == "trigger_box":
             # Don't place immediately for trigger boxes - wait for rectangle drag
             pass
@@ -333,6 +364,28 @@ class LevelEditor:
                         })
                         self.next_object_id += 1
         
+        elif self.current_tool == "text":
+            # Prompt for text content
+            root = tk.Tk()
+            root.withdraw()
+            text_content = simpledialog.askstring("Text Element", "Enter text content:")
+            root.destroy()
+            
+            if text_content:
+                # Create single text element at rectangle center
+                center_x = left + width // 2
+                center_y = top + height // 2
+                
+                self.text_elements.append({
+                    "x": center_x,
+                    "y": center_y,
+                    "width": len(text_content) * 12,
+                    "height": 24,
+                    "text": text_content,
+                    "id": self.next_object_id
+                })
+                self.next_object_id += 1
+        
         elif self.current_tool == "trigger_box":
             # Create trigger box
             self.trigger_boxes.append({
@@ -375,6 +428,13 @@ class LevelEditor:
                              spike["y"] <= y < spike["y"] + spike["height"])]
         erased_objects.extend([spike for spike in original_spikes if spike not in self.spikes])
         
+        # Remove text elements and track erased ones
+        original_texts = self.text_elements.copy()
+        self.text_elements = [text for text in self.text_elements 
+                             if not (text["x"] <= x < text["x"] + text["width"] and
+                                    text["y"] <= y < text["y"] + text["height"])]
+        erased_texts = [text for text in original_texts if text not in self.text_elements]
+        
         # Remove trigger boxes and track erased ones
         original_triggers = self.trigger_boxes.copy()
         self.trigger_boxes = [trigger for trigger in self.trigger_boxes 
@@ -383,7 +443,7 @@ class LevelEditor:
         erased_triggers = [trigger for trigger in original_triggers if trigger not in self.trigger_boxes]
         
         # Clean up connection lines for erased objects
-        for erased_obj in erased_objects + erased_triggers:
+        for erased_obj in erased_objects + erased_triggers + erased_texts:
             # Remove connections where this object is the target
             self.connection_lines = [conn for conn in self.connection_lines 
                                    if conn["object"] != erased_obj]
@@ -421,6 +481,15 @@ class LevelEditor:
                 if (spike["x"] <= world_x < spike["x"] + spike["width"] and
                     spike["y"] <= world_y < spike["y"] + spike["height"]):
                     self.selected_object = spike
+                    self.show_action_dialog()
+                    return
+            
+            # Check text elements
+            for text in self.text_elements:
+                if (text["x"] <= world_x < text["x"] + text["width"] and
+                    text["y"] <= world_y < text["y"] + text["height"]):
+                    self.selected_object = text
+                    self.selected_object["type"] = "text"
                     self.show_action_dialog()
                     return
             
@@ -469,8 +538,22 @@ class LevelEditor:
         if not self.selected_trigger or not self.selected_object:
             return None
         
-        trigger_actions = self.selected_trigger.get("trigger_actions", {})
-        return trigger_actions.get(str(self.selected_object["id"]), None)
+        # Look in the actions field for trigger-to-trigger actions
+        actions = self.selected_trigger.get("actions", {})
+        obj_actions = actions.get(str(self.selected_object["id"]), [])
+        
+        # Handle both single action (old format) and multiple actions (new format)
+        if isinstance(obj_actions, dict):
+            # Check if it's an enable/disable action
+            if obj_actions.get("action") in ["enable", "disable"]:
+                return obj_actions
+        elif isinstance(obj_actions, list):
+            # Find the first enable/disable action
+            for action in obj_actions:
+                if action.get("action") in ["enable", "disable"]:
+                    return action
+        
+        return None
     
     def get_all_existing_actions(self):
         """Get all existing actions between selected trigger and object"""
@@ -557,16 +640,67 @@ class LevelEditor:
         button_frame.pack(pady=20)
         
         def apply_action():
+            # Save state before making changes
+            self.save_state_to_undo()
+            
+            # Get current actions to modify
+            if "actions" not in self.selected_trigger:
+                self.selected_trigger["actions"] = {}
+            
+            obj_id = str(self.selected_object["id"])
+            
+            # Initialize actions list if needed
+            if obj_id not in self.selected_trigger["actions"]:
+                self.selected_trigger["actions"][obj_id] = []
+            elif isinstance(self.selected_trigger["actions"][obj_id], dict):
+                # Convert old single action format to list
+                old_action = self.selected_trigger["actions"][obj_id]
+                self.selected_trigger["actions"][obj_id] = [old_action]
+            
+            current_actions = self.selected_trigger["actions"][obj_id]
+            
+            # Remove existing enable/disable actions
+            current_actions[:] = [action for action in current_actions 
+                                if action["action"] not in ["enable", "disable"]]
+            
+            # Add the new action if selected
             if enable_var.get():
-                self.add_trigger_action("enable", duration=0.0)
-                root.destroy()
-                self.reset_action_mode()
+                action_data = {
+                    "action": "enable",
+                    "duration": 0.0,
+                    "delay": 0.0
+                }
+                current_actions.append(action_data)
+                print(f"Added enable action: Trigger {self.selected_trigger['id']} -> Trigger {self.selected_object['id']}")
+                # Add visual indicator
+                self.connection_lines.append({
+                    "trigger": self.selected_trigger,
+                    "object": self.selected_object,
+                    "action": "enable"
+                })
             elif disable_var.get():
-                self.add_trigger_action("disable", duration=0.0)
-                root.destroy()
-                self.reset_action_mode()
-            else:
-                messagebox.showwarning("No Action Selected", "Please select an action (Enable or Disable)")
+                action_data = {
+                    "action": "disable", 
+                    "duration": 0.0,
+                    "delay": 0.0
+                }
+                current_actions.append(action_data)
+                print(f"Added disable action: Trigger {self.selected_trigger['id']} -> Trigger {self.selected_object['id']}")
+                # Add visual indicator
+                self.connection_lines.append({
+                    "trigger": self.selected_trigger,
+                    "object": self.selected_object,
+                    "action": "disable"
+                })
+            
+            # Clean up empty actions (this handles the case where nothing is selected)
+            if not current_actions:
+                del self.selected_trigger["actions"][obj_id]
+                if not self.selected_trigger["actions"]:
+                    del self.selected_trigger["actions"]
+            
+            root.destroy()
+            self.reset_action_mode()
         
         def cancel_action():
             root.destroy()
@@ -1014,6 +1148,20 @@ class LevelEditor:
                     id_text = self.small_font.render(f"S{spike['id']}", True, id_color)
                     screen.blit(id_text, (screen_x + 2, screen_y + GRID_SIZE - 12))
         
+        # Draw text elements
+        for text_elem in self.text_elements:
+            screen_x, screen_y = self.world_to_screen(text_elem["x"], text_elem["y"])
+            if -100 < screen_x < SCREEN_WIDTH + 100 and -100 < screen_y < GAME_HEIGHT + 100:
+                # Draw only the text (no background or border)
+                text_surface = self.font.render(text_elem["text"], True, WHITE)
+                screen.blit(text_surface, (screen_x, screen_y))
+                
+                # Draw object ID only in editor for identification
+                if "id" in text_elem:
+                    id_color = (255, 255, 0) if text_elem == self.selected_object else RED
+                    id_text = self.small_font.render(f"T{text_elem['id']}", True, id_color)
+                    screen.blit(id_text, (screen_x, screen_y + text_elem["height"]))
+        
         # Draw trigger boxes
         for trigger in self.trigger_boxes:
             screen_x, screen_y = self.world_to_screen(trigger["x"], trigger["y"])
@@ -1185,7 +1333,7 @@ class LevelEditor:
     
     def draw_drag_preview(self):
         """Draw preview of object being dragged"""
-        if self.dragging and self.drag_start and self.current_tool in ["yellow_block", "pit", "spike", "trigger_box"]:
+        if self.dragging and self.drag_start and self.current_tool in ["yellow_block", "pit", "spike", "trigger_box", "text"]:
             mouse_x, mouse_y = pygame.mouse.get_pos()
             if mouse_y < GAME_HEIGHT:
                 world_x, world_y = self.screen_to_world(mouse_x, mouse_y)
@@ -1225,6 +1373,13 @@ class LevelEditor:
                 elif self.current_tool == "trigger_box":
                     rect = pygame.Rect(screen_x, screen_y, width, height)
                     pygame.draw.rect(screen, (255, 0, 255), rect, 3)
+                elif self.current_tool == "text":
+                    # Show text preview (plain text)
+                    center_x = screen_x + width // 2
+                    center_y = screen_y + height // 2
+                    text_surface = self.font.render("TEXT", True, WHITE)
+                    text_rect = text_surface.get_rect(center=(center_x, center_y))
+                    screen.blit(text_surface, text_rect)
     
     def draw_ui(self):
         """Draw user interface"""
@@ -1242,8 +1397,9 @@ class LevelEditor:
             ("4: Start Point", "start", GREEN),
             ("5: Spike", "spike", RED),
             ("6: Trigger Box", "trigger_box", ORANGE),
-            ("7: Erase", "erase", WHITE),
-            ("8: Action Mode", "action", (255, 0, 255) if self.action_mode else GRAY)
+            ("7: Text", "text", (255, 255, 255)),
+            ("8: Erase", "erase", WHITE),
+            ("9: Action Mode", "action", (255, 0, 255) if self.action_mode else GRAY)
         ]
         
         x_offset = 10
@@ -1289,7 +1445,7 @@ class LevelEditor:
 
         
         # Level info
-        info_text = f"Level: {self.level_name} | Blocks: {len(self.yellow_blocks)} | Pits: {len(self.pits)} | Spikes: {len(self.spikes)} | Triggers: {len(self.trigger_boxes)}"
+        info_text = f"Level: {self.level_name} | Blocks: {len(self.yellow_blocks)} | Pits: {len(self.pits)} | Spikes: {len(self.spikes)} | Text: {len(self.text_elements)} | Triggers: {len(self.trigger_boxes)}"
         info = self.small_font.render(info_text, True, WHITE)
         screen.blit(info, (10, GAME_HEIGHT + 75))
     
@@ -1422,6 +1578,18 @@ class LevelEditor:
                 "enabled": trigger.get("enabled", True)
             })
         
+        # Convert text elements to proper format
+        text_elements = []
+        for text in self.text_elements:
+            text_elements.append({
+                "x": text["x"],
+                "y": text["y"],
+                "width": text["width"],
+                "height": text["height"],
+                "text": text["text"],
+                "id": text.get("id", 0)
+            })
+        
         level_data = {
             "name": f"{self.level_name.replace('_', ' ').title()}",
             "start_position": {
@@ -1432,6 +1600,7 @@ class LevelEditor:
             "pits": self.pits,
             "spikes": spikes,
             "trigger_boxes": trigger_boxes,
+            "text_elements": text_elements,
             "flag": {
                 "x": self.flag_x
             }
@@ -1460,6 +1629,7 @@ class LevelEditor:
             self.pits = []
             self.spikes = []
             self.trigger_boxes = []
+            self.text_elements = []
             
             # Clear visual indicators
             self.connection_lines = []
@@ -1501,6 +1671,18 @@ class LevelEditor:
                     "enabled": trigger_data.get("enabled", True)
                 })
             
+            # Load text elements
+            for text_data in level_data.get("text_elements", []):
+                self.text_elements.append({
+                    "x": text_data["x"],
+                    "y": text_data["y"],
+                    "width": text_data["width"],
+                    "height": text_data["height"],
+                    "text": text_data["text"],
+                    "id": text_data.get("id", self.next_object_id)
+                })
+                self.next_object_id = max(self.next_object_id, text_data.get("id", 0) + 1)
+            
             # Load pits
             self.pits = level_data.get("pits", [])
             
@@ -1514,7 +1696,7 @@ class LevelEditor:
             
             # Update next object ID to avoid conflicts
             max_id = 0
-            for obj in self.yellow_blocks + self.spikes + self.trigger_boxes:
+            for obj in self.yellow_blocks + self.spikes + self.trigger_boxes + self.text_elements:
                 if "id" in obj and obj["id"] > max_id:
                     max_id = obj["id"]
             self.next_object_id = max_id + 1
@@ -1538,6 +1720,7 @@ class LevelEditor:
         self.pits = []
         self.spikes = []
         self.trigger_boxes = []
+        self.text_elements = []
         
         # Clear visual indicators
         self.connection_lines = []
@@ -1669,6 +1852,7 @@ class LevelEditor:
             'pits': [pit.copy() for pit in self.pits],
             'spikes': [spike.copy() for spike in self.spikes],
             'trigger_boxes': [trigger.copy() for trigger in self.trigger_boxes],
+            'text_elements': [text.copy() for text in self.text_elements],
             'flag_x': self.flag_x,
             'start_x': self.start_x,
             'next_object_id': self.next_object_id,
@@ -1697,6 +1881,7 @@ class LevelEditor:
             'pits': [pit.copy() for pit in self.pits],
             'spikes': [spike.copy() for spike in self.spikes],
             'trigger_boxes': [trigger.copy() for trigger in self.trigger_boxes],
+            'text_elements': [text.copy() for text in self.text_elements],
             'flag_x': self.flag_x,
             'start_x': self.start_x,
             'next_object_id': self.next_object_id,
@@ -1716,6 +1901,7 @@ class LevelEditor:
         self.pits = last_state['pits']
         self.spikes = last_state['spikes']
         self.trigger_boxes = last_state['trigger_boxes']
+        self.text_elements = last_state.get('text_elements', [])
         self.flag_x = last_state['flag_x']
         self.start_x = last_state['start_x']
         self.next_object_id = last_state['next_object_id']
@@ -1736,6 +1922,7 @@ class LevelEditor:
             'pits': [pit.copy() for pit in self.pits],
             'spikes': [spike.copy() for spike in self.spikes],
             'trigger_boxes': [trigger.copy() for trigger in self.trigger_boxes],
+            'text_elements': [text.copy() for text in self.text_elements],
             'flag_x': self.flag_x,
             'start_x': self.start_x,
             'next_object_id': self.next_object_id,
@@ -1755,6 +1942,7 @@ class LevelEditor:
         self.pits = redo_state['pits']
         self.spikes = redo_state['spikes']
         self.trigger_boxes = redo_state['trigger_boxes']
+        self.text_elements = redo_state.get('text_elements', [])
         self.flag_x = redo_state['flag_x']
         self.start_x = redo_state['start_x']
         self.next_object_id = redo_state['next_object_id']
